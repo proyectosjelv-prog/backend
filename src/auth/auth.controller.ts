@@ -6,6 +6,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { Roles } from './decorators/roles.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { UserRole } from '../config/security/roles.config';
+import { Patch } from '@nestjs/common';
 
 
 @Controller('auth')
@@ -53,5 +54,25 @@ export class AuthController {
   @Delete('delete/:id')
   deleteUser(@Param('id') id: string) {
     return this.authService.deleteUser(+id);
+  }
+  
+  @Post('request-password-reset')
+  requestReset(@Body() body: { email: string }) {
+    return this.authService.requestPasswordReset(body.email);
+  }
+
+  @Post('change-password')
+  changePassword(@Body() body: { token: string; newPassword: string }) {
+    return this.authService.changePassword(body.token, body.newPassword);
+  }
+
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN) // Solo Admins y SuperAdmins pueden hacer esto
+  @Patch('change-role/:id')
+  async changeRole(
+    @Param('id') id: string, 
+    @Body('role') role: UserRole
+  ) {
+    return this.authService.changeUserRole(+id, role);
   }
 }

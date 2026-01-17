@@ -1,15 +1,18 @@
-// src/auth/jwt.strategy.ts
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor() {
+  constructor(configService: ConfigService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: 'MI_PALABRA_SECRETA_SUPER_SEGURA',
+      // CAMBIO AQUÍ: Usamos .getOrThrow en lugar de .get
+      // Esto lanza un error si la variable no existe en el .env,
+      // y garantiza a TypeScript que siempre devolverá un string.
+      secretOrKey: configService.getOrThrow<string>('JWT_SECRET'),
     });
   }
 

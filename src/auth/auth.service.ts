@@ -6,6 +6,8 @@ import { EmailService } from '../email/email.service';
 import { JwtService } from '@nestjs/jwt';
 import { v4 as uuidv4 } from 'uuid';
 import * as bcrypt from 'bcrypt';
+import { ConfigService } from '@nestjs/config';
+import { UserRole } from '../config/security/roles.config';
 
 @Injectable()
 export class AuthService {
@@ -13,6 +15,7 @@ export class AuthService {
     private prisma: PrismaService,
     private emailService: EmailService,
     private jwtService: JwtService,
+    private configService: ConfigService, // Inyectar config
   ) {}
 
   async register(registerDto: RegisterAuthDto) {
@@ -114,6 +117,7 @@ export class AuthService {
     return { message: `Usuario ${user.email} eliminado correctamente.` };
   }
 
+  
   async getProfile(userId: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -127,5 +131,67 @@ export class AuthService {
       email: user.email,
       role: user.role,
     };
+  }
+  // NUEVO: Solicitar cambio de contraseña (envía correo)
+  async requestPasswordReset(email: string) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) throw new BadRequestException('Si el correo existe, se envió un enlace.');
+
+    // Usamos el mismo campo verificationToken o creamos uno nuevo específico
+    const resetToken = uuidv4();
+    
+    await this.prisma.user.update({
+      where: { email },
+      data: { verificationToken: resetToken } // Reusamos este campo temporalmente
+    });
+
+    // Ojo: Deberías crear un método sendResetPasswordEmail en emailService similar al de verificación
+    // Por ahora simularemos que usa el mismo canal
+    const frontendUrl = this.configService.get('FRONTEND_URL');
+    const link = `${frontendUrl}/change-password?token=${resetToken}`;
+    
+    console.log(`LINK DE RECUPERACIÓN (Enviar por email): ${link}`);
+    // await this.emailService.sendRecoveryEmail(email, link); // Implementar esto en EmailService
+
+    return { message: 'Correo de recuperación enviado.' };
+  }
+
+  // NUEVO: Cambiar la contraseña usando el token
+  async changePassword(token: string, newPassword: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { verificationToken: token },
+    });
+
+    if (!user) throw new BadRequestException('Token inválido o expirado');
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hashedPassword,
+        verificationToken: null, // Quemamos el token para que no se use de nuevo
+      },
+    });
+
+    return { message: 'Contraseña actualizada correctamente. Inicia sesión.' };
+  }
+  
+  async changeUserRole(userId: number, newRole: UserRole) {
+    // Opcional: Validar que el rol exista
+    if (!Object.values(UserRole).includes(newRole)) {
+        throw new BadRequestException('El rol especificado no es válido');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new BadRequestException('Usuario no encontrado');
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { role: newRole },
+    });
+
+    return { message: `El rol del usuario ${user.email} ahora es ${newRole}` };
   }
 }
