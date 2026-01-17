@@ -1,0 +1,35 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider      = "prisma-client-js"
+  // Esta línea obliga a Prisma a descargar el .exe compatible con Windows
+  binaryTargets = ["native", "windows"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+model User {
+  id        Int      @id @default(autoincrement()) // ID único (1, 2, 3...)
+  email     String   @unique                       // Correo (no se puede repetir)
+  username  String                                 // Nombre de usuario
+  password  String                                 // Contraseña encriptada
+  
+  // Roles: Guardamos un string que debe coincidir con tu archivo roles.config.ts
+  // Por defecto todos nacen siendo 'USER'
+  role      String   @default("USER")
+
+  // Verificación de Email
+  isVerified        Boolean  @default(false)       // ¿Ya verificó su correo?
+  verificationToken String?                        // Token temporal para el link del correo
+
+  createdAt DateTime @default(now())               // Fecha de creación
+  updatedAt DateTime @updatedAt                    // Última actualización
+}
