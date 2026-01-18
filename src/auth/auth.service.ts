@@ -194,4 +194,19 @@ export class AuthService {
 
     return { message: `El rol del usuario ${user.email} ahora es ${newRole}` };
   }
+  
+  // Obtener lista de todos los usuarios (sin passwords)
+  async getAllUsers() {
+    return this.prisma.user.findMany({
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        isVerified: true,
+        createdAt: true,
+      },
+      orderBy: { id: 'asc' }
+    });
+  }
 }

@@ -75,4 +75,11 @@ export class AuthController {
   ) {
     return this.authService.changeUserRole(+id, role);
   }
+
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN) // Solo Admins ven la lista
+  @Get('users')
+  getAllUsers() {
+    return this.authService.getAllUsers();
+  }
 }
