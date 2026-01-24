@@ -209,4 +209,22 @@ export class AuthService {
       orderBy: { id: 'asc' }
     });
   }
+
+  async updatePassword(userId: number, oldPass: string, newPass: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new BadRequestException('Usuario no encontrado');
+
+    const isMatch = await bcrypt.compare(oldPass, user.password);
+    if (!isMatch) throw new BadRequestException('La contraseña anterior es incorrecta');
+
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(newPass, salt);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password: hash }
+    });
+
+    return { message: 'Contraseña actualizada correctamente' };
+  }
 }

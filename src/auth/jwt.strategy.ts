@@ -1,13 +1,14 @@
-// src/auth/jwt.strategy.ts
+// backend/src/auth/jwt.strategy.ts
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { jwtConstants } from '../config/security/jwt.constants'; // O donde tengas tu secret
-import { PrismaService } from '../prisma.service'; // <--- Importa Prisma
+import { jwtConstants } from '../config/security/jwt.constants';
+import { PrismaService } from '../prisma.service'; // <--- 1. Importante
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private prisma: PrismaService) { // <--- Inyectamos Prisma
+  // 2. Inyectamos Prisma en el constructor
+  constructor(private prisma: PrismaService) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         (request) => {
@@ -15,24 +16,28 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         },
       ]),
       ignoreExpiration: false,
-      secretOrKey: jwtConstants.secret, // Asegúrate de usar tu env o constante
+      secretOrKey: jwtConstants.secret,
     });
   }
 
-  // Esta función se ejecuta AUTOMÁTICAMENTE en cada petición protegida
+  // 3. Esta función valida CADA petición
   async validate(payload: any) {
-    // 1. Buscamos al usuario REAL en la DB usando el ID del token
+    // Buscamos al usuario en la DB fresca
     const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub }, // 'sub' es el ID en el token estándar
+      where: { id: payload.sub },
     });
 
-    // 2. Si el usuario fue eliminado, lanzamos error y bloqueamos el acceso
+    // Si lo borraste de la DB, esto da error y bloquea el acceso
     if (!user) {
-      throw new UnauthorizedException('Usuario no encontrado o eliminado');
+      throw new UnauthorizedException('Usuario eliminado o no encontrado');
     }
 
-    // 3. (Opcional) Si quieres que el cambio de rol sea INMEDIATO:
-    // Retornamos el usuario de la DB, que tiene el rol NUEVO (no el del token)
-    return { userId: user.id, email: user.email, role: user.role };
+    // Retornamos el rol REAL de la base de datos, no el del token viejo
+    return {
+      userId: user.id, 
+      email: user.email,
+      role: user.role,
+      username: user.username,
+  };
   }
 }
