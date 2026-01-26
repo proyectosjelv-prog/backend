@@ -10,17 +10,33 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  username  String
-  password  String
-
-  role      String   @default("USER")
-
-  
+  id                Int      @id @default(autoincrement())
+  email             String   @unique
+  username          String
+  password          String
+  role              String   @default("USER") // O usa tu Enum si usas PostgreSQL
   isVerified        Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // 1. Token de Verificación de Email (Solo para registro)
   verificationToken String?
 
+  // 2. Token de Reset de Password (Separado y con expiración)
+  passwordResetToken String?
+  passwordResetExpires DateTime?
+
+  // 3. Relación con Refresh Tokens
+  refreshTokens     RefreshToken[]
+}
+
+// 4. Modelo para Refresh Tokens (Seguridad de sesión)
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique // El hash del token o el token mismo
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revoked   Boolean  @default(false) // Para cerrar sesión forzosamente
+  expiresAt DateTime
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 }

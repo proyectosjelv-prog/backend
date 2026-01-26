@@ -1,5 +1,5 @@
 // src/auth/auth.service.ts
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { RegisterAuthDto } from './dto/register-auth.dto';
 import { EmailService } from '../email/email.service';
@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { UserRole } from '../config/security/roles.config';
+import { Response } from 'express';
 
 @Injectable()
 export class AuthService {
@@ -18,6 +19,111 @@ export class AuthService {
     private configService: ConfigService, // Inyectar config
   ) {}
 
+  // --- MÉTODO PRIVADO PARA GENERAR TOKENS ---
+  private async generateTokens(userId: number, email: string, role: string) {
+    const payload = { sub: userId, email, role };
+
+    const [accessToken, refreshToken] = await Promise.all([
+      // Access Token: Dura poco (ej. 15 min)
+      this.jwtService.signAsync(payload, { 
+        secret: this.configService.get('JWT_SECRET'),
+        expiresIn: '15m' 
+      }),
+      // Refresh Token: Dura mucho (ej. 7 días)
+      this.jwtService.signAsync(payload, { 
+        secret: this.configService.get('JWT_REFRESH_SECRET'),
+        expiresIn: '7d' 
+      }),
+    ]);
+
+    return { accessToken, refreshToken };
+  }
+
+  // --- MÉTODO PRIVADO PARA GUARDAR REFRESH TOKEN ---
+  private async saveRefreshToken(userId: number, token: string) {
+    // Calculamos fecha de expiración (7 días desde hoy)
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await this.prisma.refreshToken.create({
+      data: {
+        token, // En prod idealmente guardarías el hash del token
+        userId,
+        expiresAt,
+      },
+    });
+  }
+
+  async refreshTokens(refreshToken: string, res: Response) {
+    // 1. Buscamos el token en la base de datos
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+      include: { user: true },
+    });
+
+    // 2. Validaciones de seguridad extremas
+    if (!storedToken) {
+      throw new UnauthorizedException('Token inválido (No existe en DB)');
+    }
+    if (storedToken.revoked) {
+      // Si el token estaba revocado y se intenta usar, ¡es un robo de sesión!
+      // Medida de seguridad: revocar TODO de ese usuario
+      await this.prisma.refreshToken.updateMany({
+        where: { userId: storedToken.userId },
+        data: { revoked: true },
+      });
+      throw new UnauthorizedException('Intento de reuso de token revocado. Sesión bloqueada.');
+    }
+    if (new Date() > storedToken.expiresAt) {
+      throw new UnauthorizedException('Sesión expirada. Por favor inicia sesión de nuevo.');
+    }
+
+    // 3. Verificar firma criptográfica (JWT)
+    try {
+      await this.jwtService.verifyAsync(refreshToken, {
+        secret: this.configService.get('JWT_REFRESH_SECRET'),
+      });
+    } catch (e) {
+      throw new UnauthorizedException('Token corrupto o firma inválida');
+    }
+
+    // 4. Rotación de Tokens (Seguridad clave)
+    // Revocamos el token actual (ya se usó) y creamos uno nuevo
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { revoked: true },
+    });
+
+    // Generamos el nuevo par
+    const { accessToken, refreshToken: newRefreshToken } = await this.generateTokens(
+      storedToken.userId,
+      storedToken.user.email,
+      storedToken.user.role,
+    );
+
+    // Guardamos el nuevo refresh token
+    await this.saveRefreshToken(storedToken.userId, newRefreshToken);
+
+    // 5. Seteamos las Cookies frescas
+    res.cookie('token', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 15 * 60 * 1000, // 15 min
+      path: '/', // <--- ¡AGREGA ESTO AQUÍ TAMBIÉN! 🔑
+    });
+
+    res.cookie('refresh_token', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
+      path: '/auth/refresh',
+    });
+
+    return { message: 'Sesión renovada exitosamente' };
+  }
+  
   async register(registerDto: RegisterAuthDto) {
     const userExists = await this.prisma.user.findUnique({
       where: { email: registerDto.email },
@@ -70,34 +176,42 @@ export class AuthService {
     return { message: '¡Cuenta verificada con éxito! Ya puedes iniciar sesión.' };
   }
 
-  async login(loginDto: { email: string; password: string }) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: loginDto.email },
+  async login(loginDto: { email: string; password: string }, res: Response) {
+    const user = await this.prisma.user.findUnique({ where: { email: loginDto.email } });
+    if (!user) throw new BadRequestException('Credenciales inválidas');
+    if (!user.isVerified) throw new BadRequestException('Verifica tu correo');
+    
+    const isMatch = await bcrypt.compare(loginDto.password, user.password);
+    if (!isMatch) throw new BadRequestException('Credenciales inválidas');
+
+    // 1. Generar Tokens
+    const { accessToken, refreshToken } = await this.generateTokens(user.id, user.email, user.role);
+
+    // 2. Guardar Refresh Token en DB
+    await this.saveRefreshToken(user.id, refreshToken);
+
+    // 3. Setear Cookies Seguras
+    // Access Token Cookie (HttpOnly)
+    res.cookie('token', accessToken, {
+      httpOnly: true, // No accesible por JS del frontend (evita XSS)
+      secure: process.env.NODE_ENV === 'production', // Solo HTTPS en prod
+      sameSite: 'lax', // Protección CSRF
+      maxAge: 15 * 60 * 1000, // 15 min
+      path: '/', // <--- ¡ESTA ES LA CLAVE! 🔑
     });
 
-    if (!user) {
-      throw new BadRequestException('Credenciales inválidas (Email)');
-    }
+    // Refresh Token Cookie (HttpOnly, path específico)
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
+      path: '/auth/refresh', // Solo se envía al endpoint de refresh
+    });
 
-    if (!user.isVerified) {
-      throw new BadRequestException('Debes verificar tu correo antes de entrar');
-    }
-
-    const isPasswordValid = await bcrypt.compare(loginDto.password, user.password);
-
-    if (!isPasswordValid) {
-      throw new BadRequestException('Credenciales inválidas (Password)');
-    }
-
-    const payload = { sub: user.id, email: user.email, role: user.role };
-    
     return {
-      access_token: await this.jwtService.signAsync(payload),
-      user: {
-        id: user.id,
-        username: user.username,
-        role: user.role
-      }
+      message: 'Login exitoso',
+      user: { id: user.id, username: user.username, role: user.role }
     };
   }
 
@@ -132,34 +246,39 @@ export class AuthService {
       role: user.role,
     };
   }
-  // NUEVO: Solicitar cambio de contraseña (envía correo)
+  
   async requestPasswordReset(email: string) {
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) throw new BadRequestException('Si el correo existe, se envió un enlace.');
+    // Por seguridad, no decimos si el usuario existe o no
+    if (!user) return { message: 'Si el correo existe, se envió un enlace.' };
 
-    // Usamos el mismo campo verificationToken o creamos uno nuevo específico
     const resetToken = uuidv4();
-    
+    // Expiración: 1 hora desde ahora
+    const expires = new Date();
+    expires.setHours(expires.getHours() + 1);
+
     await this.prisma.user.update({
       where: { email },
-      data: { verificationToken: resetToken } // Reusamos este campo temporalmente
+      data: { 
+        passwordResetToken: resetToken,
+        passwordResetExpires: expires
+      }
     });
 
-    // Ojo: Deberías crear un método sendResetPasswordEmail en emailService similar al de verificación
-    // Por ahora simularemos que usa el mismo canal
+    // Enviar Email (Simulado)
     const frontendUrl = this.configService.get('FRONTEND_URL');
-    const link = `${frontendUrl}/change-password?token=${resetToken}`;
+    console.log(`LINK RESET: ${frontendUrl}/change-password?token=${resetToken}`);
     
-    console.log(`LINK DE RECUPERACIÓN (Enviar por email): ${link}`);
-    // await this.emailService.sendRecoveryEmail(email, link); // Implementar esto en EmailService
-
-    return { message: 'Correo de recuperación enviado.' };
+    return { message: 'Si el correo existe, se envió un enlace.' };
   }
 
-  // NUEVO: Cambiar la contraseña usando el token
+  // --- CAMBIAR PASSWORD CON TOKEN ---
   async changePassword(token: string, newPassword: string) {
     const user = await this.prisma.user.findFirst({
-      where: { verificationToken: token },
+      where: { 
+        passwordResetToken: token,
+        passwordResetExpires: { gt: new Date() } // El token debe no haber expirado
+      },
     });
 
     if (!user) throw new BadRequestException('Token inválido o expirado');
@@ -171,11 +290,14 @@ export class AuthService {
       where: { id: user.id },
       data: {
         password: hashedPassword,
-        verificationToken: null, // Quemamos el token para que no se use de nuevo
+        passwordResetToken: null,   // Limpiar token
+        passwordResetExpires: null, // Limpiar fecha
+        // Opcional: Revocar todas las sesiones (refresh tokens) al cambiar clave
+        refreshTokens: { deleteMany: {} } 
       },
     });
 
-    return { message: 'Contraseña actualizada correctamente. Inicia sesión.' };
+    return { message: 'Contraseña actualizada.' };
   }
   
   async changeUserRole(userId: number, newRole: UserRole) {
@@ -226,5 +348,13 @@ export class AuthService {
     });
 
     return { message: 'Contraseña actualizada correctamente' };
+  }
+  
+  // --- LOGOUT ---
+  async logout(res: Response) {
+    // Limpiar cookies
+    res.clearCookie('token');
+    res.clearCookie('refresh_token', { path: '/auth/refresh' });
+    return { message: 'Sesión cerrada' };
   }
 }
