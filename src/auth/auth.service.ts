@@ -1,5 +1,5 @@
 // src/auth/auth.service.ts
-import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, BadRequestException, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { RegisterAuthDto } from './dto/register-auth.dto';
 import { EmailService } from '../email/email.service';
@@ -124,7 +124,30 @@ export class AuthService {
     return { message: 'Sesión renovada exitosamente' };
   }
   
+  // Obtener estado (Público, para saber si mostrar el formulario)
+  async getRegistrationStatus() {
+    const config = await this.prisma.systemConfig.findUnique({
+      where: { key: 'REGISTRATION_ENABLED' },
+    });
+    // Si no existe configuración, asumimos que está ABIERTO por defecto
+    return { enabled: config ? config.value === 'true' : true };
+  }
+
+  // Cambiar estado (Solo Admin)
+  async toggleRegistration(enable: boolean) {
+    await this.prisma.systemConfig.upsert({
+      where: { key: 'REGISTRATION_ENABLED' },
+      update: { value: String(enable) },
+      create: { key: 'REGISTRATION_ENABLED', value: String(enable) },
+    });
+    return { message: `Registro de usuarios ${enable ? 'HABILITADO' : 'DESHABILITADO'}` };
+  }
+  
   async register(registerDto: RegisterAuthDto) {
+    const status = await this.getRegistrationStatus();
+    if (!status.enabled) {
+      throw new ForbiddenException('El registro de nuevos usuarios está cerrado temporalmente.');
+    }
     const userExists = await this.prisma.user.findUnique({
       where: { email: registerDto.email },
     });

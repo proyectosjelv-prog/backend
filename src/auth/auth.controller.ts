@@ -11,7 +11,8 @@ import {
   Patch, 
   Res, 
   Req, // <--- USAMOS ESTE DECORADOR (IMPORTANTE)
-  UnauthorizedException 
+  UnauthorizedException,
+  ForbiddenException
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterAuthDto } from './dto/register-auth.dto';
@@ -27,6 +28,19 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  // 1. Endpoint PÚBLICO para que el Frontend sepa si mostrar el form
+  @Get('registration-status')
+  async getRegStatus() {
+    return this.authService.getRegistrationStatus();
+  }
+  // 2. Endpoint ADMIN para apagar/encender
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  @Post('admin/toggle-registration')
+  async toggleRegistration(@Body() body: { enable: boolean }) {
+    return this.authService.toggleRegistration(body.enable);
+  }
+  
   // 1. REGISTRO
   @Post('register')
   register(@Body() registerDto: RegisterAuthDto) {

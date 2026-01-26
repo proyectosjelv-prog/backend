@@ -40,3 +40,9 @@ model RefreshToken {
   expiresAt DateTime
   createdAt DateTime @default(now())
 }
+
+// Tabla para configuraciones globales (Registro on/off, modo mantenimiento, etc.)
+model SystemConfig {
+  key   String @id // Ej: "REGISTRATION_ENABLED"
+  value String     // Ej: "true" o "false"
+}
