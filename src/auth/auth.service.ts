@@ -7,8 +7,9 @@ import { JwtService } from '@nestjs/jwt';
 import { v4 as uuidv4 } from 'uuid';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
-import { UserRole } from '../config/security/roles.config';
+import { ROLE_HIERARCHY, UserRole } from '../config/security/roles.config';
 import { Response } from 'express';
+
 
 @Injectable()
 export class AuthService {
@@ -323,22 +324,42 @@ export class AuthService {
     return { message: 'Contraseña actualizada.' };
   }
   
-  async changeUserRole(userId: number, newRole: UserRole) {
-    // Opcional: Validar que el rol exista
+  async changeUserRole(targetUserId: number, newRole: UserRole, requesterUser: any) {
+    
+    // 1. Validar que el rol exista
     if (!Object.values(UserRole).includes(newRole)) {
-        throw new BadRequestException('El rol especificado no es válido');
+        throw new BadRequestException('Rol no válido');
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new BadRequestException('Usuario no encontrado');
+    // 2. OBTENER NIVELES DE JERARQUÍA
+    const requesterLevel = ROLE_HIERARCHY[requesterUser.role]; // Ej: ADMIN = 2
+    const newRoleLevel = ROLE_HIERARCHY[newRole];              // Ej: SUPER_ADMIN = 3
+    
+    // --- REGLA DE ORO: NO PUEDES DAR PODER IGUAL O SUPERIOR AL TUYO ---
+    if (newRoleLevel >= requesterLevel) {
+        throw new ForbiddenException(
+            `No tienes permisos para asignar el rol ${newRole}. Solo puedes asignar roles inferiores al tuyo.`
+        );
+    }
 
+    // 3. Obtener el usuario objetivo
+    const targetUser = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!targetUser) throw new BadRequestException('Usuario no encontrado');
+
+    // --- REGLA ADICIONAL (Opcional): NO PUEDES TOCAR A ALGUIEN DE TU MISMO NIVEL O SUPERIOR ---
+    const targetUserLevel = ROLE_HIERARCHY[targetUser.role];
+    if (targetUserLevel >= requesterLevel) {
+        throw new ForbiddenException('No puedes modificar a un usuario con igual o mayor rango que tú.');
+    }
+
+    // 4. Si pasa las reglas, aplicamos el cambio
     await this.prisma.user.update({
-      where: { id: userId },
-      data: { role: newRole },
+        where: { id: targetUserId },
+        data: { role: newRole },
     });
 
-    return { message: `El rol del usuario ${user.email} ahora es ${newRole}` };
-  }
+    return { message: `Rol actualizado a ${newRole}` };
+}
   
   // Obtener lista de todos los usuarios (sin passwords)
   async getAllUsers() {

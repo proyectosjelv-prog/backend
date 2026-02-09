@@ -139,9 +139,11 @@ export class AuthController {
   @Patch('change-role/:id')
   async changeRole(
     @Param('id') id: string, 
-    @Body('role') role: UserRole
+    @Body('role') newRole: UserRole,
+    @Req() req: any // <--- 1. Recibimos al solicitante
   ) {
-    return this.authService.changeUserRole(+id, role);
+    // 2. Pasamos el usuario solicitante al servicio
+    return this.authService.changeUserRole(+id, newRole, req.user); 
   }
 
   
